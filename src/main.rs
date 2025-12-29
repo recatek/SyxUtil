@@ -5,9 +5,9 @@ use eframe::egui;
 fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([512.0, 730.0])
-            .with_title("SyxUtil")
-            .with_resizable(true),
+            .with_inner_size([512.0, 125.0])
+            .with_resizable(false)
+            .with_title("SyxUtil"),
         ..Default::default()
     };
 
@@ -18,7 +18,8 @@ fn main() {
     );
 }
 
-const DATA: [(&str, usize, u32); 22] = [
+// Name, Source Long Index, Scroll/Shift Amount
+const DATA_V70: [(&str, usize, u32); 22] = [
     ("Woodcutter", 35, 14),
     ("Fishery", 35, 40),
     ("Clay", 35, 42),
@@ -44,24 +45,20 @@ const DATA: [(&str, usize, u32); 22] = [
 ];
 
 struct MyApp {
-    source_36: String,
-    source_35: String,
+    scratch: String,
 
-    parsed_35: u64,
-    parsed_36: u64,
+    raw_input: String,
 
-    data: [String; DATA.len()],
+    parsed: Vec<i64>,
+    data: [String; DATA_V70.len()],
 }
 
 impl Default for MyApp {
     fn default() -> Self {
         Self {
-            source_36: "0".to_owned(),
-            source_35: "0".to_owned(),
-
-            parsed_35: 0,
-            parsed_36: 0,
-
+            scratch: "Current Settlement Name and Index".to_owned(),
+            raw_input: "".to_owned(),
+            parsed: vec![],
             data: array::from_fn(|_| "00".to_owned()),
         }
     }
@@ -69,85 +66,89 @@ impl Default for MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Decimal Input");
+            ui.heading("Scratch Space");
+            ui.text_edit_singleline(&mut self.scratch);
 
-            ui.horizontal(|ui| {
-                ui.label("35 = ");
-                ui.text_edit_singleline(&mut self.source_36);
-            });
+            ui.heading("Region Input");
 
-            ui.horizontal(|ui| {
-                ui.label("36 = ");
-                ui.text_edit_singleline(&mut self.source_35);
-            });
+            ui.text_edit_singleline(&mut self.raw_input);
 
             if ui.button("Read").clicked() {
-                self.parsed_35 = self.source_35.parse::<u64>().unwrap_or(0);
-                self.parsed_36 = self.source_36.parse::<u64>().unwrap_or(0);
+                self.parsed = self
+                    .raw_input
+                    .trim_matches(['[', ']'].as_ref())
+                    .split(',')
+                    .map(|s| s.trim().parse::<i64>().unwrap())
+                    .collect();
 
-                for (i, (_, source, shift)) in DATA.iter().enumerate() {
-                    let value = match *source {
-                        35 => read_prospect(self.parsed_35, *shift),
-                        36 => read_prospect(self.parsed_36, *shift),
-                        _ => panic!("invalid source"),
-                    };
+                println!("{}", self.parsed[35]);
+                println!("{}", self.parsed[36]);
 
-                    self.data[i] = format!("{:02}", value);
+                for (i, (_, index, shift)) in DATA_V70.iter().enumerate() {
+                    let value = read_prospect(self.parsed[*index], *shift);
+                    self.data[i] = format!("{:02b}", value);
                 }
+
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize((512.0, 760.0).into()));
             }
 
-            ui.heading("Read Binary");
+            if self.parsed.len() > 0 {
+                ui.heading("Read Binary");
 
-            ui.label(format!("35 = {:064b}", self.parsed_35));
-            ui.label(format!("36 = {:064b}", self.parsed_36));
+                ui.label(format!("35 = {:064b}", self.parsed[35]));
+                ui.label(format!("36 = {:064b}", self.parsed[36]));
 
-            ui.heading("Prospect Flags");
+                ui.heading("Prospect Flags");
 
-            for (i, (name, source, shift)) in DATA.iter().enumerate() {
+                for (i, (name, index, shift)) in DATA_V70.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut self.data[i]);
+                        ui.label(egui::RichText::new(*name).color(get_color(&self.data[i])));
+                    });
+
+                    let value = i64::from_str_radix(&self.data[i], 2).unwrap_or(0);
+                    write_prospect(&mut self.parsed[*index], *shift, value)
+                }
+
+                ui.heading("Output");
+
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.data[i]);
-                    ui.label(
-                        egui::RichText::new(*name).color(match is_ok(&self.data[i]) {
-                            true => egui::Color32::GRAY,
-                            false => egui::Color32::RED,
-                        }),
-                    );
+                    if ui.button("Copy").clicked() {
+                        ctx.copy_text(self.parsed[35].to_string());
+                    }
+                    ui.label(format!("35 = {}", self.parsed[35]));
                 });
 
-                let value = self.data[i].parse::<u64>().unwrap_or(0);
-
-                match *source {
-                    35 => write_prospect(&mut self.parsed_35, *shift, value),
-                    36 => write_prospect(&mut self.parsed_36, *shift, value),
-                    _ => panic!("invalid source"),
-                };
+                ui.horizontal(|ui| {
+                    if ui.button("Copy").clicked() {
+                        ctx.copy_text(self.parsed[36].to_string());
+                    }
+                    ui.label(format!("36 = {}", self.parsed[36]));
+                });
             }
-
-            ui.heading("Decimal Output");
-
-            ui.label(format!("35 = {}", self.parsed_35));
-            ui.label(format!("36 = {}", self.parsed_36));
         });
     }
 }
 
-fn is_ok(value: &str) -> bool {
-    if value.chars().all(|c| c == '0' || c == '1') == false {
-        return false;
+fn get_color(value: &str) -> egui::Color32 {
+    if value.chars().all(|c| c == '0' || c == '1') == false || value.len() != 2 {
+        return egui::Color32::RED;
     }
 
-    if value.len() > 2 {
-        return false;
+    match value {
+        "00" => egui::Color32::GRAY,
+        "01" => egui::Color32::ORANGE,
+        "10" => egui::Color32::DARK_GREEN,
+        "11" => egui::Color32::GREEN,
+        _ => egui::Color32::RED,
     }
-
-    true
 }
 
-fn read_prospect(value: u64, shift: u32) -> u64 {
+fn read_prospect(value: i64, shift: u32) -> i64 {
     value >> shift & 0b11
 }
 
-fn write_prospect(value: &mut u64, shift: u32, prospect: u64) {
+fn write_prospect(value: &mut i64, shift: u32, prospect: i64) {
     let mask = !(0b11 << shift);
-    *value = (*value & mask) | (prospect << shift)
+    *value = (*value & mask) | ((prospect & 0b11) << shift)
 }
