@@ -1,17 +1,13 @@
 use std::array;
+use std::collections::HashSet;
 use std::num::ParseIntError;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use eframe::{egui, icon_data};
+use egui::Vec2;
 use native_dialog::{DialogBuilder, MessageLevel};
 
-const ICON: &[u8] = include_bytes!("..\\assets\\icon.png");
-const WIDTH: f32 = 512.0;
-const HEIGHT_SMALL: f32 = 193.0;
-const HEIGHT_LARGE: f32 = 845.0;
-
-// The relevant affected indices for setting prospect flags
-const INDICES_V70: &[usize] = &[35, 36];
 // Name, Source Long Index, Scroll/Shift Amount
 const DATA_V70: &[(&str, usize, u32)] = &[
     ("Woodcutter", 35, 14),
@@ -38,13 +34,23 @@ const DATA_V70: &[(&str, usize, u32)] = &[
     ("Onx", 36, 48),
 ];
 
+const ICON: &[u8] = include_bytes!("..\\assets\\icon.png");
+const WIDTH: f32 = 512.0;
+
+const INDICES: LazyLock<Vec<usize>> = LazyLock::new(|| {
+    let set = HashSet::<usize>::from_iter(DATA_V70.iter().map(|(_, index, _)| *index));
+    let mut vec = set.into_iter().collect::<Vec<usize>>();
+    vec.sort_unstable();
+    vec
+});
+
 fn main() {
     let icon = icon_data::from_png_bytes(ICON).unwrap();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([WIDTH, HEIGHT_SMALL])
             .with_resizable(false)
+            .with_max_inner_size(Vec2::new(WIDTH, 1.0))
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };
@@ -63,6 +69,10 @@ struct AppState {
 
     parsed: Vec<i64>,
     data: [String; DATA_V70.len()],
+
+    small_size: Option<f32>,
+    size_small: bool,
+    size_dirty: bool,
 }
 
 impl Default for AppState {
@@ -72,6 +82,10 @@ impl Default for AppState {
             raw_input: "".to_owned(),
             parsed: vec![],
             data: array::from_fn(|_| "00".to_owned()),
+
+            small_size: None,
+            size_small: true,
+            size_dirty: true,
         }
     }
 }
@@ -108,9 +122,7 @@ impl eframe::App for AppState {
                         self.data[i] = format!("{:02b}", value);
                     }
 
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                        (WIDTH, HEIGHT_LARGE).into(),
-                    ));
+                    self.size_small = false;
                 } else {
                     self.parsed.clear();
 
@@ -121,16 +133,16 @@ impl eframe::App for AppState {
                         .alert()
                         .show();
 
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                        (WIDTH, HEIGHT_SMALL).into(),
-                    ));
+                    self.size_small = true;
                 }
+
+                self.size_dirty = true;
             }
 
             if self.parsed.len() > 0 {
                 ui.heading("Read Binary");
 
-                for index in INDICES_V70.iter() {
+                for index in INDICES.iter() {
                     ui.label(format!("{} = {:064b}", index, self.parsed[*index]));
                 }
 
@@ -150,7 +162,7 @@ impl eframe::App for AppState {
 
                 ui.label("Copy these modified values back into the regionData[N] entry:");
 
-                for index in INDICES_V70.iter() {
+                for index in INDICES.iter() {
                     ui.horizontal(|ui| {
                         if ui.button("Copy").clicked() {
                             ctx.copy_text(self.parsed[*index].to_string());
@@ -160,6 +172,22 @@ impl eframe::App for AppState {
                 }
             }
         });
+
+        println!("Used size: {:?}", ctx.used_size());
+        if self.small_size.is_none() {
+            self.small_size = Some(ctx.used_size().y);
+        }
+
+        if self.size_dirty {
+            // Ugly hack because egui's used_size never shrinks
+            let height = match self.size_small {
+                true => self.small_size.unwrap(),
+                false => ctx.used_size().y,
+            };
+
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
+            self.size_dirty = false;
+        }
     }
 }
 
