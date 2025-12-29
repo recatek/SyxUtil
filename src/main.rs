@@ -1,25 +1,19 @@
 use std::array;
+use std::num::ParseIntError;
+use std::sync::Arc;
 
-use eframe::egui;
+use eframe::{egui, icon_data};
+use native_dialog::{DialogBuilder, MessageLevel};
 
-fn main() {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([512.0, 125.0])
-            .with_resizable(false)
-            .with_title("SyxUtil"),
-        ..Default::default()
-    };
+const ICON: &[u8] = include_bytes!("..\\assets\\icon.png");
+const WIDTH: f32 = 512.0;
+const HEIGHT_SMALL: f32 = 193.0;
+const HEIGHT_LARGE: f32 = 845.0;
 
-    let _ = eframe::run_native(
-        "My egui App",
-        options,
-        Box::new(|_| Ok(Box::<MyApp>::default())),
-    );
-}
-
+// The relevant affected indices for setting prospect flags
+const INDICES_V70: &[usize] = &[35, 36];
 // Name, Source Long Index, Scroll/Shift Amount
-const DATA_V70: [(&str, usize, u32); 22] = [
+const DATA_V70: &[(&str, usize, u32)] = &[
     ("Woodcutter", 35, 14),
     ("Fishery", 35, 40),
     ("Clay", 35, 42),
@@ -44,7 +38,25 @@ const DATA_V70: [(&str, usize, u32); 22] = [
     ("Onx", 36, 48),
 ];
 
-struct MyApp {
+fn main() {
+    let icon = icon_data::from_png_bytes(ICON).unwrap();
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([WIDTH, HEIGHT_SMALL])
+            .with_resizable(false)
+            .with_icon(Arc::new(icon)),
+        ..Default::default()
+    };
+
+    let _ = eframe::run_native(
+        "SyxUtil v70",
+        options,
+        Box::new(|_| Ok(Box::<AppState>::default())),
+    );
+}
+
+struct AppState {
     scratch: String,
 
     raw_input: String,
@@ -53,50 +65,74 @@ struct MyApp {
     data: [String; DATA_V70.len()],
 }
 
-impl Default for MyApp {
+impl Default for AppState {
     fn default() -> Self {
         Self {
-            scratch: "Current Settlement Name and Index".to_owned(),
+            scratch: "0".to_owned(),
             raw_input: "".to_owned(),
             parsed: vec![],
             data: array::from_fn(|_| "00".to_owned()),
         }
     }
 }
-impl eframe::App for MyApp {
+
+impl eframe::App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Scratch Space");
-            ui.text_edit_singleline(&mut self.scratch);
+
+            ui.label(
+                "With the settlement window open, set a breakpoint in the RDProspects.get \n\
+                function and record the reg.index value here for reference in the next step:",
+            );
+
+            ui.horizontal(|ui| {
+                ui.label("N = ");
+                ui.text_edit_singleline(&mut self.scratch);
+            });
 
             ui.heading("Region Input");
 
+            ui.label(
+                "Set a breakpoint in WORLD.update's for loop and copy the data from\n\
+                w.resources.es[3].regionData[N] for index N (e.g. [123456, 98765, ...]):",
+            );
             ui.text_edit_singleline(&mut self.raw_input);
 
             if ui.button("Read").clicked() {
-                self.parsed = self
-                    .raw_input
-                    .trim_matches(['[', ']'].as_ref())
-                    .split(',')
-                    .map(|s| s.trim().parse::<i64>().unwrap())
-                    .collect();
+                if let Ok(parsed) = parse_input(&self.raw_input) {
+                    self.parsed = parsed;
 
-                println!("{}", self.parsed[35]);
-                println!("{}", self.parsed[36]);
+                    for (i, (_, index, shift)) in DATA_V70.iter().enumerate() {
+                        let value = read_prospect(self.parsed[*index], *shift);
+                        self.data[i] = format!("{:02b}", value);
+                    }
 
-                for (i, (_, index, shift)) in DATA_V70.iter().enumerate() {
-                    let value = read_prospect(self.parsed[*index], *shift);
-                    self.data[i] = format!("{:02b}", value);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                        (WIDTH, HEIGHT_LARGE).into(),
+                    ));
+                } else {
+                    self.parsed.clear();
+
+                    let _ = DialogBuilder::message()
+                        .set_title("Error")
+                        .set_text("Failed to parse input.")
+                        .set_level(MessageLevel::Error)
+                        .alert()
+                        .show();
+
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                        (WIDTH, HEIGHT_SMALL).into(),
+                    ));
                 }
-
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize((512.0, 760.0).into()));
             }
 
             if self.parsed.len() > 0 {
                 ui.heading("Read Binary");
 
-                ui.label(format!("35 = {:064b}", self.parsed[35]));
-                ui.label(format!("36 = {:064b}", self.parsed[36]));
+                for index in INDICES_V70.iter() {
+                    ui.label(format!("{} = {:064b}", index, self.parsed[*index]));
+                }
 
                 ui.heading("Prospect Flags");
 
@@ -112,19 +148,16 @@ impl eframe::App for MyApp {
 
                 ui.heading("Output");
 
-                ui.horizontal(|ui| {
-                    if ui.button("Copy").clicked() {
-                        ctx.copy_text(self.parsed[35].to_string());
-                    }
-                    ui.label(format!("35 = {}", self.parsed[35]));
-                });
+                ui.label("Copy these modified values back into the regionData[N] entry:");
 
-                ui.horizontal(|ui| {
-                    if ui.button("Copy").clicked() {
-                        ctx.copy_text(self.parsed[36].to_string());
-                    }
-                    ui.label(format!("36 = {}", self.parsed[36]));
-                });
+                for index in INDICES_V70.iter() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy").clicked() {
+                            ctx.copy_text(self.parsed[*index].to_string());
+                        }
+                        ui.label(format!("{} = {}", index, self.parsed[*index]));
+                    });
+                }
             }
         });
     }
@@ -151,4 +184,14 @@ fn read_prospect(value: i64, shift: u32) -> i64 {
 fn write_prospect(value: &mut i64, shift: u32, prospect: i64) {
     let mask = !(0b11 << shift);
     *value = (*value & mask) | ((prospect & 0b11) << shift)
+}
+
+fn parse_input(input: &str) -> Result<Vec<i64>, ParseIntError> {
+    let mut parsed = Vec::new();
+
+    for value in input.trim_matches(['[', ']'].as_ref()).split(',') {
+        parsed.push(value.trim().parse::<i64>()?);
+    }
+
+    Ok(parsed)
 }
